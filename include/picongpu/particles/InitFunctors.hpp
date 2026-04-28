@@ -19,6 +19,8 @@
 
 #pragma once
 
+#include "picongpu/plugins/openPMD/openPMDWriter.def"
+
 #include "picongpu/defines.hpp"
 #include "picongpu/fields/Fields.def"
 #include "picongpu/particles/Manipulate.def"
@@ -26,8 +28,15 @@
 #include "picongpu/particles/densityProfiles/IProfile.def"
 #include "picongpu/particles/filter/filter.def"
 #include "picongpu/particles/manipulators/manipulators.def"
+#include "picongpu/plugins/multi/IHelp.hpp"
+#include "picongpu/plugins/output/IIOBackend.hpp"
+#include "picongpu/plugins/openPMD/openPMDWriter.hpp"
+#include "picongpu/plugins/openPMD/restart/LoadSpecies.hpp"
+#include "picongpu/simulation/control/Simulation.hpp"
+// TODO should make if statement, in case openPMD is not used
 
 #include <pmacc/Environment.hpp>
+#include <pmacc/filesystem.hpp>
 #include <pmacc/meta/conversion/TypeToPointerPair.hpp>
 #include <pmacc/particles/IdProvider.hpp>
 #include <pmacc/particles/meta/FindByNameOrType.hpp>
@@ -36,6 +45,7 @@
 #include <pmacc/traits/Resolve.hpp>
 
 #include <boost/mpl/apply.hpp>
+
 
 namespace picongpu
 {
@@ -239,6 +249,67 @@ namespace picongpu
                 auto speciesPtr = dc.get<SpeciesType>(FrameType::getName());
                 speciesPtr->fillAllGaps();
             }
+        };
+
+        /** Create macroparticle distribution, by copying existing distribution from openPMD data
+         *
+         */
+        // TODO: file path
+        template<typename T_SpeciesType = boost::mpl::_1 >//, std::string filePath>
+        struct FromFile
+        {
+            using SpeciesType = pmacc::particles::meta::FindByNameOrType_t<VectorAllSpecies, T_SpeciesType>;
+            using FrameType = typename SpeciesType::FrameType;
+            // directory and filename of the openPMD file
+            // TODO: directory should probably have a set relative path
+            std::string const loadDirectory{"/p/project1/pwfa-trojan/wrobel1"};
+            std::string const constLoadFilename{"test.bp5"};
+            uint32_t const loadStep = 0;
+            uint32_t const loadChunkSize = 1'000'000u;
+
+            // mapping description of super cells to GPU blocks
+            MappingDesc* m_cellDescription = nullptr;
+            // contains info about sim and openPMD data
+            openPMD::ThreadParams mThreadParams;
+            // create LoadSpecies Struct for this species
+            openPMD::LoadSpecies<SpeciesType> LoadThisSpecies;
+
+            HINLINE void operator()(uint32_t const currentStep)
+            {
+                static int callCount = 0;
+                std::cout << "FromFile called: " << ++callCount << " (step " << currentStep << ")\n";
+                // set as in openPMDWriter constructor
+                MPI_Comm communicator = MPI_COMM_NULL;
+                auto fileName = stdfs::path(constLoadFilename).has_root_path() ? constLoadFilename : loadDirectory + "/" + constLoadFilename;
+                // ignore file extensions and suffixes for now as set by hand
+                std::string fullName = fileName;
+                // set openPMD series
+                mThreadParams.openPMDSeries = std::make_unique<::openPMD::Series>(
+                    fullName,
+                    ::openPMD::Access::READ_ONLY,
+                    communicator,
+                    "{}"); // standard value if no json is given
+
+                // sets mapping description as in SimulationStarter class, which does this for all plugins
+                // .load calls .PluginLoad method, which sets mappingDescription of the object, so must be called here
+                DataConnector& dc = Environment<>::get().DataConnector();
+                auto speciesPtr = dc.get<SpeciesType>(FrameType::getName());
+                m_cellDescription = new MappingDesc(speciesPtr->getCellDescription());
+
+                mThreadParams.cellDescription = m_cellDescription;
+                // window offset and extent information
+                mThreadParams.window = MovingWindow::getInstance().getDomainAsWindow(loadStep);
+                mThreadParams.localWindowToDomainOffset = DataSpace<simDim>::create(0);
+
+                // call LoadSpecies constructor, load openPMD data into simulation
+                LoadThisSpecies(
+                    &mThreadParams,
+                    loadStep,
+                    loadChunkSize);
+            }
+            // destructor of FromFile needs to delete m_cellDescription
+            ~FromFile() { delete m_cellDescription; }
+
         };
 
         namespace detail
