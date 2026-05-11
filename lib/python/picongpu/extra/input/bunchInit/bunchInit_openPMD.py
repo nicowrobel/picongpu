@@ -99,10 +99,26 @@ class addParticles2File:
         self.speciesName = speciesName
         self.filename_out = filename_out
 
+        # some hard coded values until conversion is done on read
+        # TODO: remove when fixed
+        m_e = 9.1093837139e-31
+        c = 299792458
+        N_gpus = vec3D(1, 1, 1)
+        gridSize = vec3D(128, 256, 128)
+        CELL_WIDTH_SI = 0.5 * 0.1772e-6
+        CELL_HEIGHT_SI = CELL_WIDTH_SI
+        CELL_DEPTH_SI = CELL_WIDTH_SI
+        BASE_DENSITY_SI = 4e24
+        TYPICAL_PARTICLES_PER_CELL = 1
+        cellSize = vec3D(CELL_WIDTH_SI, CELL_HEIGHT_SI, CELL_DEPTH_SI)
+        unitMass = m_e * cellSize.prod() * BASE_DENSITY_SI * TYPICAL_PARTICLES_PER_CELL
+        unitSpeed = c
+        unitMomentum = unitMass * unitSpeed
 
+        # 3D position units
+        self.unitPosition = cellSize
         # momentum unit
-        self.unitMomentum = 1.0
-        # position unit is same as cellSize
+        self.unitMomentum = unitMomentum
 
         self.has_probeE = False
         self.has_probeB = False
@@ -147,21 +163,18 @@ class addParticles2File:
         self.dtype_patchNum =    np.dtype("uint64")
         self.dtype_patchNumOff = np.dtype("uint64")
 
-        self.cellSize = vec3D(0.5*0.1772e-6, 0.5*0.1772e-6, 0.5*0.1772e-6)
+        # number of GPUs used in each dimension
+        self.N_gpus = N_gpus
+
+        # get extent of each GPU in cells (per dimension)
+        ext_x = np.array([gridSize.x], dtype=self.dtype_patchExtent) #np.full(self.N_gpus.prod(), gridSize.x // N_gpus.x, dtype=self.dtype_patchExtent)
+        ext_y = np.array([gridSize.y], dtype=self.dtype_patchExtent) #np.full(self.N_gpus.prod(), gridSize.y // N_gpus.y, dtype=self.dtype_patchExtent)
+        ext_z = np.array([gridSize.z], dtype=self.dtype_patchExtent) #np.full(self.N_gpus.prod(), gridSize.z // N_gpus.z, dtype=self.dtype_patchExtent)
+
         # particle patch offsets in cells
         off_x = np.array([0], dtype=self.dtype_patchOffset)
         off_y = np.array([0], dtype=self.dtype_patchOffset)
         off_z = np.array([0], dtype=self.dtype_patchOffset)
-
-        # get extent of each GPU in cells (per dimension)
-        ext_x = np.array([128], dtype=self.dtype_patchExtent)
-        ext_y = np.array([256], dtype=self.dtype_patchExtent)
-        ext_z = np.array([128], dtype=self.dtype_patchExtent)
-
-        # extract number of GPUs used in each dimension
-        # use np.unique() to reduce patches offset and len() to get number
-        # of GPUs per dimension
-        self.N_gpus = vec3D(len(np.unique(off_x)), len(np.unique(off_y)), len(np.unique(off_z)))
 
         # get patch offset
         self.offset = vec3D(off_x, off_y, off_z)
@@ -185,20 +198,21 @@ class addParticles2File:
         w - float array
             macro particle weighting
         """
-        self.N_particles_input = len(w)  # number of particles to add
+        # number of particles to add
+        self.N_particles_input = len(w)
 
         # calculate positionOffset (cell location) from given position
         self.positionOffset = vec3D(
-            (pos.x / self.cellSize.x).astype(self.dtype_positionOffset),
-            (pos.y / self.cellSize.y).astype(self.dtype_positionOffset),
-            (pos.z / self.cellSize.z).astype(self.dtype_positionOffset),
+            (pos.x / self.unitPosition.x).astype(self.dtype_positionOffset),
+            (pos.y / self.unitPosition.y).astype(self.dtype_positionOffset),
+            (pos.z / self.unitPosition.z).astype(self.dtype_positionOffset),
         )
 
         # calculate (in cell) position from given position
         self.position = vec3D(
-            (np.mod(pos.x, self.cellSize.x) / self.cellSize.x).astype(self.dtype_position),
-            (np.mod(pos.y, self.cellSize.y) / self.cellSize.y).astype(self.dtype_position),
-            (np.mod(pos.z, self.cellSize.z) / self.cellSize.z).astype(self.dtype_position),
+            (np.mod(pos.x, self.unitPosition.x) / self.unitPosition.x).astype(self.dtype_position),
+            (np.mod(pos.y, self.unitPosition.y) / self.unitPosition.y).astype(self.dtype_position),
+            (np.mod(pos.z, self.unitPosition.z) / self.unitPosition.z).astype(self.dtype_position),
         )
 
         # calculate momentum in PIC units from given momentum
@@ -272,16 +286,20 @@ class addParticles2File:
         """
         write all particle data to checkpoint with the help of the pipe class
         """
-        self.print("make patch mask")
+        self.print("Make patch mask")
         self.makePatchMask()  # calculate particle patch
         self.N_particles = np.sum(self.numParticles)
+        self.print(f"{self.N_particles - self.N_particles_input} particles were lost to mask")
 
+        self.print("Writing to file")
         self.createParticleFile()
+        self.print("Finished")
 
     def createParticleFile(self):
         """
         create openPMD series and write particles to it
         """
+        self.print("\tCreate Series")
         series = opmd.Series(self.filename_out, opmd.Access.create)
         iteration = series.iterations[self.timestep]
         particle = iteration.particles[self.speciesName]
@@ -300,11 +318,7 @@ class addParticles2File:
 
 
         # datasets for new data
-        dataset_position =          opmd.Dataset(self.dtype_position,       (self.N_particles, ))
-        dataset_position_offset =   opmd.Dataset(self.dtype_positionOffset, (self.N_particles, ))
-        dataset_momentum =          opmd.Dataset(self.dtype_momentum,       (self.N_particles, ))
-        dataset_weighting =         opmd.Dataset(self.dtype_weighting,      (self.N_particles, ))
-
+        self.print("\tCreate patch datasets")
         dataset_patch_extent =      opmd.Dataset(self.dtype_patchExtent, (self.N_gpus.prod(), ))
         dataset_patch_offset =      opmd.Dataset(self.dtype_patchOffset, (self.N_gpus.prod(), ))
 
@@ -313,20 +327,6 @@ class addParticles2File:
 
 
         # create new datasets in openPMD
-        position["x"].reset_dataset(dataset_position)
-        position["y"].reset_dataset(dataset_position)
-        position["z"].reset_dataset(dataset_position)
-
-        position_offset["x"].reset_dataset(dataset_position_offset)
-        position_offset["y"].reset_dataset(dataset_position_offset)
-        position_offset["z"].reset_dataset(dataset_position_offset)
-
-        momentum["x"].reset_dataset(dataset_momentum)
-        momentum["y"].reset_dataset(dataset_momentum)
-        momentum["z"].reset_dataset(dataset_momentum)
-
-        weighting[opmd.Mesh_Record_Component.SCALAR].reset_dataset(dataset_weighting)
-
         patch_offset["x"].reset_dataset(dataset_patch_offset)
         patch_offset["y"].reset_dataset(dataset_patch_offset)
         patch_offset["z"].reset_dataset(dataset_patch_offset)
@@ -338,7 +338,7 @@ class addParticles2File:
         particlePatch["numParticlesOffset"][opmd.Mesh_Record_Component.SCALAR].reset_dataset(dataset_patch_numParticlesOffset)
         particlePatch["numParticles"][opmd.Mesh_Record_Component.SCALAR].reset_dataset(dataset_patch_numParticles)
 
-
+        self.print("\tSet unit dimensions")
         # set unit dimensions of patch
         # for position, they are set by default
         patch_offset.unit_dimension = {
@@ -354,46 +354,76 @@ class addParticles2File:
         }
 
         # set units
-        position["x"].unit_SI = self.cellSize.x
-        position["y"].unit_SI = self.cellSize.y
-        position["z"].unit_SI = self.cellSize.z
+        self.print("\tSet units")
+        position["x"].unit_SI = self.unitPosition.x
+        position["y"].unit_SI = self.unitPosition.y
+        position["z"].unit_SI = self.unitPosition.z
 
-        position_offset["x"].unit_SI = self.cellSize.x
-        position_offset["y"].unit_SI = self.cellSize.y
-        position_offset["z"].unit_SI = self.cellSize.z
+        position_offset["x"].unit_SI = self.unitPosition.x
+        position_offset["y"].unit_SI = self.unitPosition.y
+        position_offset["z"].unit_SI = self.unitPosition.z
 
         momentum["x"].unit_SI = self.unitMomentum
         momentum["y"].unit_SI = self.unitMomentum
         momentum["z"].unit_SI = self.unitMomentum
 
-
         # write data
-        position["x"][:] = self.position.x
-        position["y"][:] = self.position.y
-        position["z"][:] = self.position.z
+        self.print("\tWrite data")
+        self.print("\t\tWrite position")
+        self.write(position["x"], self.position.x, self.dtype_position)
+        self.write(position["y"], self.position.y, self.dtype_position)
+        self.write(position["z"], self.position.z, self.dtype_position)
 
-        position_offset["x"][:] = self.positionOffset.x
-        position_offset["y"][:] = self.positionOffset.y
-        position_offset["z"][:] = self.positionOffset.z
+        self.print("\t\tWrite position offset")
+        self.write(position_offset["x"], self.positionOffset.x, self.dtype_positionOffset)
+        self.write(position_offset["y"], self.positionOffset.y, self.dtype_positionOffset)
+        self.write(position_offset["z"], self.positionOffset.z, self.dtype_positionOffset)
 
-        momentum["x"][:] = self.momentum.x
-        momentum["y"][:] = self.momentum.y
-        momentum["z"][:] = self.momentum.z
+        self.print("\t\tWrite momentum")
+        self.write(momentum["x"], self.momentum.x, self.dtype_momentum)
+        self.write(momentum["y"], self.momentum.y, self.dtype_momentum)
+        self.write(momentum["z"], self.momentum.z, self.dtype_momentum)
 
-        weighting[opmd.Mesh_Record_Component.SCALAR][:] = self.weighting
+        self.print("\t\tWrite weighting")
+        self.write(weighting[opmd.Mesh_Record_Component.SCALAR], self.weighting, self.dtype_weighting)
 
-        patch_offset["x"].store(0, self.offset.x)
-        patch_offset["y"].store(0, self.offset.y)
-        patch_offset["z"].store(0, self.offset.z)
-
-        patch_extent["x"].store(0, self.extent.x)
-        patch_extent["y"].store(0, self.extent.y)
-        patch_extent["z"].store(0, self.extent.z)
-
-        patch_numParticles[opmd.Mesh_Record_Component.SCALAR].store(0, self.numParticles)
-        patch_numParticlesOffset[opmd.Mesh_Record_Component.SCALAR].store(0, self.numParticlesOffset)
+        self.print("\t\tWrite patch data")
+        for i in range(self.N_gpus.prod()):
+            patch_offset["x"].store(i, self.offset.x[i])
+            patch_offset["y"].store(i, self.offset.y[i])
+            patch_offset["z"].store(i, self.offset.z[i])
+    
+            patch_extent["x"].store(i, self.extent.x[i])
+            patch_extent["y"].store(i, self.extent.y[i])
+            patch_extent["z"].store(i, self.extent.z[i])
+    
+            patch_numParticles[opmd.Mesh_Record_Component.SCALAR].store(i, self.numParticles[i])
+            patch_numParticlesOffset[opmd.Mesh_Record_Component.SCALAR].store(i, self.numParticlesOffset[i])
 
         # flush and close file
+        self.print("\tFlush")
         series.flush()
         series.close()
 
+    def write(self, dest, data, dtype):
+        """
+        Writes new data to given record component in dest with data types
+        from src.
+
+        Arguments:
+        dest: openPMD layer
+                layer of a openPMD series to copy new data to
+        data: array of data which is written to dest.
+        dtype: data type of data
+        """
+        shape = (self.N_particles,)
+
+        dest.reset_dataset(opmd.Dataset(dtype, shape))
+        # write particle data for each patch
+        for i in range(self.N_gpus.prod()):
+            dest.store_chunk(
+                array=data[self.patch_mask[i, :]],
+                offset=[self.numParticlesOffset[i]],
+                extent=(self.numParticles[i],),
+            )
+                
