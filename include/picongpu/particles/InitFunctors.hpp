@@ -254,16 +254,13 @@ namespace picongpu
         /** Create macroparticle distribution, by copying existing distribution from openPMD data
          *
          */
-        // TODO: file path
-        template<typename T_SpeciesType = boost::mpl::_1 >//, std::string filePath>
+        // TODO: more filepath debugging. Check what errors are thrown if I insert invalid paths
+        template<char const* filePath, typename T_SpeciesType = boost::mpl::_1>
         struct FromFile
         {
             using SpeciesType = pmacc::particles::meta::FindByNameOrType_t<VectorAllSpecies, T_SpeciesType>;
             using FrameType = typename SpeciesType::FrameType;
-            // directory and filename of the openPMD file
-            // TODO: directory should probably have a set relative path
-            std::string const loadDirectory{"/p/project1/pwfa-trojan/wrobel1"};
-            std::string const constLoadFilename{"test.bp5"};
+            std::string const fullName = filePath;
             uint32_t const loadStep = 0;
             uint32_t const loadChunkSize = 1'000'000u;
 
@@ -280,9 +277,8 @@ namespace picongpu
                 std::cout << "FromFile called: " << ++callCount << " (step " << currentStep << ")\n";
                 // set as in openPMDWriter constructor
                 MPI_Comm communicator = MPI_COMM_NULL;
-                auto fileName = stdfs::path(constLoadFilename).has_root_path() ? constLoadFilename : loadDirectory + "/" + constLoadFilename;
-                // ignore file extensions and suffixes for now as set by hand
-                std::string fullName = fileName;
+                // auto fileName = stdfs::path(constLoadFilename).has_root_path() ? constLoadFilename : loadDirectory + "/" + constLoadFilename;
+                // // ignore file extensions and suffixes for now as set by hand
                 // set openPMD series
                 mThreadParams.openPMDSeries = std::make_unique<::openPMD::Series>(
                     fullName,
