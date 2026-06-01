@@ -71,6 +71,8 @@ namespace picongpu
                 uint32_t const components = GetNComponents<ValueType>::value;
                 using ComponentType = typename GetComponentsType<ValueType>::type;
                 picongpu::traits::OpenPMDName<Identifier> openPMDName;
+                picongpu::traits::OpenPMDUnit<Identifier> openPMDUnit;
+                std::vector<float_64> unitSISim = openPMDUnit();
 
                 log<picLog::INPUT_OUTPUT>("openPMD: ( begin ) load species attribute: %1%") % openPMDName();
 
@@ -109,6 +111,13 @@ namespace picongpu
                      */
                     params->openPMDSeries->flush();
 
+                    // load unitSI conversion factor from openPMD file and simulation
+                    auto unit_f = rc.unitSI();
+                    auto unit_s = unitSISim[n];
+                    auto unitFactor = unit_f / unit_s;
+                    log<picLog::INPUT_OUTPUT>("openPMD:  UnitSI of openPMD file: %1% vs. UnitSI of simulation: %2%")
+                    % unit_f % unit_s;
+
                     uint64_t globalNumElements = 1;
                     for(auto ext : rc.getExtent())
                     {
@@ -124,7 +133,7 @@ namespace picongpu
                     for(size_t i = 0; i < elements; ++i)
                     {
                         ComponentType* ref = &reinterpret_cast<ComponentType*>(dataPtr)[i * components + n];
-                        *ref = loadBfr.get()[i];
+                        *ref = loadBfr.get()[i] * unitFactor;
                     }
                 }
 
